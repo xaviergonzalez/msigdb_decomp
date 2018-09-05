@@ -18,7 +18,7 @@ class grad_NMF:
     """
     Implements update and API functions for simultaneous NMF
     """
-    def __init__(self, As, n_comps, seed=None, n_iter=1, resid_thresh=1e-125, eta = 0.005, wO = 0.0, wS = 0.0, hO = 0.0, hS = 0.0,
+    def __init__(self, As, n_comps, seed=None, n_iter=1, resid_thresh=1e-125, wO = 0.0, wS = 0.0, hO = 0.0, hS = 0.0,
                  alg = 'base', start = 'rand',
                  debug=False):
         """
@@ -33,7 +33,6 @@ class grad_NMF:
             resid_thresh (float): Threshold value for the ratio of the 
                                   difference in recent errors to the original
                                   residual of the factored matrix.
-            eta (float) : relaxation coefficient
             wO (float) : how much to weight the W orthogonality term in the cost function
             wS (float) : how much to weight the W sparsity term in the cost function
             hO (float) : how much to weight the H orthogonality term in the cost function
@@ -41,6 +40,7 @@ class grad_NMF:
             alg (string) : Which update to perform. 
                                 options are: 
                                 'base' : (simultaneous NMF) 
+                                'poisson' : (NMF using KL divergence)
                                 'aff' : (affine simultaneous NMF)
                                 'sorth_W' : (simultaneous NMF with semi-orthogonal W)
                                 'sorth_H : (simultaneous NMF with semi-orthogonal H)
@@ -85,8 +85,8 @@ class grad_NMF:
         self.nonneg = self.EPS #value for reset if gradient descent goes negative
         
         #record weighting parameters
-        self.eta = eta
-        self.eta_hold = eta #an origional value for eta to remember for relaxation methods
+#         self.eta = eta
+#         self.eta_hold = eta #an origional value for eta to remember for relaxation methods
         self.eta_decay_rate = 6.0
         self.eta_wO = wO
         self.eta_wS = wS
@@ -162,7 +162,7 @@ class grad_NMF:
             self.As_approx_init = []
             for a in self.As_approx:
                 self.As_approx_init.append(a)
-        elif ((alg == 'base') or (alg == 'sorth_W') or (alg == 'norm_sorth_W') or (alg == 'sorth_H') or (alg == 'norm_sorth_H')):
+        elif ((alg == 'base') or (alg == 'poisson') or (alg == 'sorth_W') or (alg == 'norm_sorth_W') or (alg == 'sorth_H') or (alg == 'norm_sorth_H')):
             self.a_0s = [np.matrix(np.zeros(A.shape[0])).T for A in self.As]
             self.As_approx_init = []
         else:
@@ -323,7 +323,7 @@ class grad_NMF:
     
     def base_W_grad(self, A,W,H):
         """
-        The gradient of the general cost function wrt W
+        The gradient of the general cost function wrt W, multiplied by the appropriate factor of eta
         
             A (np.matrix) : A matrix factoring
             W (np.matrix) : current W matrix
@@ -331,7 +331,29 @@ class grad_NMF:
             
             returns (np.matrix) : gradient of cost function wrt W
         """
-        return self.test * (W * (H * H.T) - A * H.T) + self.eta_wO * (W * (W.T * W) - W) + self.eta_wS * (W)
+        eta_factor = np.divide(self.W, self.W * (self.Hs[0] * self.Hs[0].T))
+        return np.multiply(eta_factor, 
+                           self.test * (W * (H * H.T) - A * H.T) + self.eta_wO * (W * (W.T * W) - W) + self.eta_wS * (W))
+    
+    def pois_W_grad(self, A,W,H):
+        """
+        The gradient of the KL divergence function wrt W
+        
+            A (np.matrix) : A matrix factoring
+            W (np.matrix) : current W matrix
+            H (np.matrix) : current H matrix
+            
+            returns (np.matrix) : gradient of cost function wrt W
+        """
+        eta_factor = np.divide(W, np.ones(A.shape) * H.T)
+#         print("W eta factor is {}".format(eta_factor))
+#         print("first part of W gradient is {}".format((np.divide(A, W * H) * H.T)))
+#         print('second part of W gradient is {}'.format(np.ones(A.shape) * H.T))
+#         print("W gradient is {}".format(self.test * (-np.divide(A, W * H) * H.T + np.ones(A.shape) * H.T)
+#                 + self.eta_wO * (W * (W.T * W) - W) + self.eta_wS * (W)))
+#         print()
+        return np.multiply(eta_factor, self.test * (-np.divide(A, W * H) * H.T + np.ones(A.shape) * H.T)
+                + self.eta_wO * (W * (W.T * W) - W) + self.eta_wS * (W))
 
     """
     H update functions
@@ -347,9 +369,31 @@ class grad_NMF:
             
             returns (np.matrix) : gradient of cost function wrt H
         """
-        return self.test * (W.T * W * H - W.T * A) + self.eta_hO * (H * H.T * H - H) + self.eta_hS * (H)
+        eta_factor = np.divide(H, self.W.T * self.W * H)
+        return np.multiply(eta_factor, 
+                           self.test * (W.T * W * H - W.T * A) + self.eta_hO * (H * H.T * H - H) + self.eta_hS * (H))
     
-
+    def pois_H_grad(self, A,W,H):
+        """
+        The gradient of the KL divergence wrt H
+        
+            A (np.matrix) : A matrix factoring
+            W (np.matrix) : current W matrix
+            H (np.matrix) : current H matrix
+            
+            returns (np.matrix) : gradient of cost function wrt H
+        """
+        eta_factor = np.divide(H, W.T * np.ones(A.shape))
+#         print("numerator of H eta factor is {}".format(H))
+#         print()
+#         print("denominator of H eta factor is {}".format(W.T * np.ones(A.shape)))
+#         print()
+#         print("H eta factor is {}".format(eta_factor))
+#         print("H gradient is {}".format(self.test * (W.T * np.divide(A, W * H) - W.T * np.ones(A.shape))
+#                 + self.eta_hO * (H * H.T * H - H) + self.eta_hS * (H)))
+#         print()
+        return np.multiply(eta_factor, self.test * (-W.T * np.divide(A, W * H) + W.T * np.ones(A.shape))
+                + self.eta_hO * (H * H.T * H - H) + self.eta_hS * (H))
 
     """
     a_0 update functions
@@ -425,7 +469,7 @@ class grad_NMF:
 #         plt.xlabel('iterations')
 #         plt.ylabel('residual')
 #         plt.title(str(self.alg) + ' residuals graph')
-        # print("ran {} iterations".format(iter_numb))
+#         print("ran {} iterations".format(iter_numb))
         return(iter_numb)
         
     def individual_run(self, W_grad, H_grad):
@@ -448,14 +492,18 @@ class grad_NMF:
 #             print(self.a_0s)
 #             print(self.As_approx)
 #             print()
-            self.W = self.W - self.eta * (W_grad(self.As[0], self.W, self.Hs[0]))
+#             print("W is {}".format(self.W))
+#             print()
+            self.W = self.W - (W_grad(self.As[0], self.W, self.Hs[0]))
             self.W[self.W < 0] = self.nonneg
             self.W_orth.append(self.orth_measure(self.W))
             self.W_sparse.append(np.linalg.norm(self.W))
 #             print(self.orth_measure(self.W))
 #             print()
             for j in range(len(self.Hs)):
-                self.Hs[j] = self.Hs[j] - self.eta * (H_grad(self.As[0], self.W, self.Hs[0]))
+#                 print("H is {}".format(self.Hs[j]))
+#                 print()
+                self.Hs[j] = self.Hs[j] - (H_grad(self.As[0], self.W, self.Hs[0]))
                 self.Hs[j][self.Hs[j] < 0] = self.nonneg
 #                 self.a_0s[j] = self.mult_update(self.a_0s[j], self.As[j], self.As_approx[j],self.a_0s[j],self.Hs[j], 
 #                                                 a_0_numer, a_0_denom, a_0_norm)
@@ -488,6 +536,8 @@ class grad_NMF:
         h_norm = lambda H: np.matrix(normalize(H, norm='l2', axis=1))
         if self.alg == 'base':
             self.individual_run(self.base_W_grad, self.base_H_grad)
+        elif self.alg == 'poisson':
+            self.individual_run(self.pois_W_grad, self.pois_H_grad)
 #         elif self.alg == 'aff':
 #             self.individual_run(None, self.numer_base_W, self.denom_aff_W,
 #                                 None, self.numer_base_H, self.denom_aff_H, 
@@ -531,7 +581,9 @@ if __name__ == "__main__":
 #     updates = ['base', 'aff', 'sorth_W', 'norm_sorth_W', 'aff_sorth_W', 'sorth_H', 'norm_sorth_H', 'aff_sorth_H']
 #     updates = ['norm_sorth_W', 'aff_sorth_W', 'sorth_H', 'norm_sorth_H', 'aff_sorth_H']
 #     updates = ['sorth_H', 'norm_sorth_H']
-    updates = ['base']
+#     updates = ['base']
+#     updates = ['base','poisson']
+    updates = ['poisson']
 #     updates = ['aff', 'aff_sorth_W', 'aff_sorth_H']
     
 #     starts = ['rand', 'sorth_W', 'sorth_H']
@@ -551,7 +603,7 @@ if __name__ == "__main__":
                 for WO in np.arange(0,1):
                     for WS in np.arange(0,1):
                         for HO in np.arange(0,1):
-                            for HS in np.arange(0,10):
+                            for HS in np.arange(0,1):
                                 print()
                                 print("***")
                                 print("UPDATE IS " + str(u) + "; START IS " + str(s))
@@ -562,13 +614,13 @@ if __name__ == "__main__":
                                 print("W sparsity is {}".format(WS))
                                 print("H orthogonality is {}".format(HO))
                                 print("H sparsity is {}".format(HS))
-                                nmf = grad_NMF([test_mat], n_comps=2, n_iter=2000, alg = u, start = s, wO = WO, wS = WS, 
+                                nmf = grad_NMF([test_mat], n_comps=2, n_iter=100, alg = u, start = s, wO = WO, wS = WS, 
                                                hO = HO, hS = HS)
-                                print("step size is {}".format(nmf.eta))
+#                                 print("step size is {}".format(nmf.eta))
             #                     print(nmf.count)
-            #                     print()
-            #                     print(nmf.W * nmf.Hs[0])
-            #                     print()
+                                print()
+                                print(nmf.W * nmf.Hs[0])
+                                print()
             #         #                 print(snmf.As_approx[0])
             #         #                 print()
             #         #             print(snmf.a_0s[0] * np.matrix(np.ones(snmf.As[0].shape[1])))
@@ -577,55 +629,55 @@ if __name__ == "__main__":
             #                 #     print()
             #                 #     print(snmf.a_0s_init[0])
             #                 #     print()
-            #                     print(nmf.W)
-            #                     print()
+                                print(nmf.W)
+                                print()
                             #         print(snmf.W.T * snmf.W)
                             #         print()
                     #                 print(nmf.W_init)
                     #                 print()
                             #         print(snmf.W_init.T * snmf.W_init)
                             #         print()
-                    #                 print(nmf.Hs[0])
-                    #                 print()
+                                print(nmf.Hs[0])
+                                print()
                             #         print(snmf.Hs[0] * snmf.Hs[0].T)
                     #                 print(nmf.Hs_init[0])
                     #                 print()
                             #         print(snmf.Hs_init[0] * snmf.Hs_init[0].T)
                             #         print()
-                                plt.plot(nmf.resids)
-                                plt.xlabel('iterations')
-                                plt.ylabel('residual')
-                                plt.title(str(nmf.alg) + ' residuals graph')
-                                plt.show()
-                                print()
-                                plt.plot(nmf.cost_func_list)
-                                plt.xlabel('iterations')
-                                plt.ylabel('cost function')
-                                plt.title(str(nmf.alg) + ' cost function graph')
-                                plt.show()
-                                print()
-                                plt.plot(nmf.W_orth)
-                                plt.xlabel('iterations')
-                                plt.ylabel('W orthogonality')
-                                plt.title(str(nmf.alg) + ' W orthogonality graph')
-                                plt.show()
-                                print()
-                                plt.plot(nmf.W_sparse)
-                                plt.xlabel('iterations')
-                                plt.ylabel('W sparsity')
-                                plt.title(str(nmf.alg) + ' W sparsity graph')
-                                plt.show()
-                                print()
-                                plt.plot(nmf.Hs_orth)
-                                plt.xlabel('iterations')
-                                plt.ylabel('H orthogonality')
-                                plt.title(str(nmf.alg) + ' H orthogonality graph')
-                                plt.show()
-                                print()
-                                plt.plot(nmf.Hs_sparse)
-                                plt.xlabel('iterations')
-                                plt.ylabel('H sparsity')
-                                plt.title(str(nmf.alg) + ' H sparsity graph')
-                                plt.show()
-                                print()
-                                print('FINISHED')
+#                                 plt.plot(nmf.resids)
+#                                 plt.xlabel('iterations')
+#                                 plt.ylabel('residual')
+#                                 plt.title(str(nmf.alg) + ' residuals graph')
+#                                 plt.show()
+#                                 print()
+#                                 plt.plot(nmf.cost_func_list)
+#                                 plt.xlabel('iterations')
+#                                 plt.ylabel('cost function')
+#                                 plt.title(str(nmf.alg) + ' cost function graph')
+#                                 plt.show()
+#                                 print()
+#                                 plt.plot(nmf.W_orth)
+#                                 plt.xlabel('iterations')
+#                                 plt.ylabel('W orthogonality')
+#                                 plt.title(str(nmf.alg) + ' W orthogonality graph')
+#                                 plt.show()
+#                                 print()
+#                                 plt.plot(nmf.W_sparse)
+#                                 plt.xlabel('iterations')
+#                                 plt.ylabel('W sparsity')
+#                                 plt.title(str(nmf.alg) + ' W sparsity graph')
+#                                 plt.show()
+#                                 print()
+#                                 plt.plot(nmf.Hs_orth)
+#                                 plt.xlabel('iterations')
+#                                 plt.ylabel('H orthogonality')
+#                                 plt.title(str(nmf.alg) + ' H orthogonality graph')
+#                                 plt.show()
+#                                 print()
+#                                 plt.plot(nmf.Hs_sparse)
+#                                 plt.xlabel('iterations')
+#                                 plt.ylabel('H sparsity')
+#                                 plt.title(str(nmf.alg) + ' H sparsity graph')
+#                                 plt.show()
+#                                 print()
+#                                 print('FINISHED')
