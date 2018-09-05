@@ -54,7 +54,8 @@ class SNMF:
                                   residual of the factored matrix.
             alg (string) : Which update to perform. 
                                 options are: 
-                                'base' : (simultaneous NMF) 
+                                'base' : (simultaneous NMF)
+                                'poisson' : (NMF using KL divergence)
                                 'aff' : (affine simultaneous NMF)
                                 'sorth_W' : (simultaneous NMF with semi-orthogonal W)
                                 'sorth_H : (simultaneous NMF with semi-orthogonal H)
@@ -152,7 +153,7 @@ class SNMF:
             self.As_approx_init = []
             for a in self.As_approx:
                 self.As_approx_init.append(a)
-        elif ((alg == 'base') or (alg == 'sorth_W') or (alg == 'norm_sorth_W') or (alg == 'sorth_H') or (alg == 'norm_sorth_H')):
+        elif ((alg == 'base') or (alg == 'poisson') or  (alg == 'sorth_W') or (alg == 'norm_sorth_W') or (alg == 'sorth_H') or (alg == 'norm_sorth_H')):
             self.a_0s = [np.matrix(np.zeros(A.shape[0])).T for A in self.As]
             self.As_approx_init = []
         else:
@@ -313,6 +314,14 @@ class SNMF:
         """
         return sum([self.bs[i]*self.As[i]*self.Hs[i].T for i in range(self.d)])
     
+    def numer_pois_W(self, A, a_0, H):
+        """
+        Returns the numerator for the expression for updating W using the KL divergence function
+        """
+#         print("first part of W gradient is {}".format(
+#             sum([self.bs[i]* np.divide(self.As[i], self.W * self.Hs[i]) * self.Hs[i].T for i in range(self.d)])))
+        return sum([self.bs[i]* np.divide(self.As[i], self.W * self.Hs[i]) * self.Hs[i].T for i in range(self.d)])
+    
     def numer_aff_sorth_W(self, A, a_0, H):
         """
         Returns the numerator for the expression for the sorth W in the affine NMF update
@@ -325,6 +334,13 @@ class SNMF:
         Returns the denominator for the expression in the base W update
         """
         return sum([self.bs[i] * self.W * (self.Hs[i] * self.Hs[i].T) for i in range(self.d)])
+    
+    def denom_pois_W(self, A, A_approx, a_0, H):
+        """
+        Returns the denominator for the expression for updating W using the KL divergence function
+        """
+#         print("second part of W gradient is {}".format(sum([np.ones(self.As[i].shape)* self.Hs[i].T for i in range(self.d)])))
+        return sum([np.ones(self.As[i].shape)* self.Hs[i].T for i in range(self.d)])
     
     def denom_aff_W(self, A, A_approx, a_0, H):
         """
@@ -355,6 +371,12 @@ class SNMF:
         """
         return self.W.T * A
     
+    def numer_pois_H(self, A, a_0, H):
+        """
+        Returns the numerator for the expression for updating H using the KL divergence function
+        """
+        return self.W.T * np.divide(A, self.W * H)
+    
     def numer_aff_sorth_H(self, A, a_0, H):
         """
         Returns the numerator for the expression for the sorth H in the affine NMF
@@ -366,6 +388,12 @@ class SNMF:
         Returns the denominator for the expression in the base H update
         """
         return (self.W.T * self.W) * H
+    
+    def denom_pois_H(self, A, A_approx, a_0, H):
+        """
+        Returns the denominator for the expression for updating H using the KL divergence function
+        """
+        return self.W.T * np.ones(A.shape)
     
     def denom_aff_H(self, A, A_approx, a_0, H):
         """
@@ -483,6 +511,8 @@ class SNMF:
         for i in range(self.n_iter):
             self.As_approx = [self.W * self.Hs[i] + self.a_0s[i] * np.matrix(np.ones(self.As[i].shape[1])) 
                               for i in range(len(self.As))]
+#             print("W is {}".format(self.W))
+#             print()
             self.W = self.mult_update(self.W, None, None, None, None,W_numer, W_denom, W_norm)
             self.W_orth.append(self.orth_measure(self.W))
             for j in range(len(self.Hs)):
@@ -508,6 +538,10 @@ class SNMF:
         if self.alg == 'base':
             self.individual_run(None, self.numer_base_W, self.denom_base_W, 
                                 None, self.numer_base_H, self.denom_base_H, 
+                                None, None, None)
+        elif self.alg == 'poisson':
+            self.individual_run(None, self.numer_pois_W, self.denom_pois_W, 
+                                None, self.numer_pois_H, self.denom_pois_H, 
                                 None, None, None)
         elif self.alg == 'aff':
             self.individual_run(None, self.numer_base_W, self.denom_aff_W,
@@ -549,15 +583,15 @@ if __name__ == "__main__":
         [9, 10, 11, 12]
     ])
     
-    updates = ['base', 'aff', 'sorth_W', 'norm_sorth_W', 'aff_sorth_W', 'sorth_H', 'norm_sorth_H', 'aff_sorth_H']
+#     updates = ['base', 'aff', 'sorth_W', 'norm_sorth_W', 'aff_sorth_W', 'sorth_H', 'norm_sorth_H', 'aff_sorth_H']
 #     updates = ['norm_sorth_W', 'aff_sorth_W', 'sorth_H', 'norm_sorth_H', 'aff_sorth_H']
 #     updates = ['sorth_H', 'norm_sorth_H']
-#     updates = ['norm_sorth_W']
+    updates = ['poisson']
 #     updates = ['aff', 'aff_sorth_W', 'aff_sorth_H']
     
-    starts = ['rand', 'sorth_W', 'sorth_H']
+#     starts = ['rand', 'sorth_W', 'sorth_H']
 #     starts = ['rand', 'sorth_H']
-#     starts = ['sorth_W']
+    starts = ['rand']
     
 #     for i in range(1,50):
 #         print()
@@ -569,12 +603,12 @@ if __name__ == "__main__":
     for i in range(1,2):
         for u in updates:
             for s in starts:
-                print()
-                print("***")
-                print("UPDATE IS " + str(u) + "; START IS " + str(s))
-                print("***")
-    #             print(len(snmf.resids))
-                print()
+#                 print()
+#                 print("***")
+#                 print("UPDATE IS " + str(u) + "; START IS " + str(s))
+#                 print("***")
+#     #             print(len(snmf.resids))
+#                 print()
                 snmf = SNMF([test_mat], n_comps=2, n_iter=2000, alg = u, start = s)
 #                 print(snmf.W * snmf.Hs[0])
 #                 print()
@@ -609,4 +643,4 @@ if __name__ == "__main__":
 #                 print()
 #                 print(snmf.Hs_orth[-1])
 #                 print()
-                print('FINISHED')
+#                 print('FINISHED')
