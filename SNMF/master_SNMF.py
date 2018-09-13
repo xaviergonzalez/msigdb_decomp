@@ -9,14 +9,15 @@ in different types of NMF
 """
 TODO
 
+Would be nice to further examine the behavior of the KL update for semi-orthogonal W. Has variable behavior in terms of 
+actually increasing orthogonaltiy of W dpeneding on random restart.
+
 Implementation of sorth_H; aff_sorth_H strange (but update rule is fine)
     sorth_H is totally unstable (never goes below threshold)
     aff_sorth_H sometimes gets too small values
 
 What is going on with residual? (math proof that is monotonically decreasing, but sometimes not in code)
     (like, what is going on with the residuals when I run aff_sorth_W multiple times?)
-
-Implement cost term for orthogonal instead of being either orthogonanl or not
 
 Create a "restart function"
 
@@ -33,12 +34,13 @@ import matplotlib.pyplot as plt
 import numpy as np
 # normalize imported in order to normalize the columns of the W matrix
 from sklearn.preprocessing import normalize
+import time
 
 class SNMF:
     """
     Implements update and API functions for simultaneous NMF
     """
-    def __init__(self, As, n_comps, seed=None, n_iter=1, resid_thresh=1e-125, alg = 'base', start = 'rand',
+    def __init__(self, As, n_comps, seed=None, n_iter=1, resid_thresh=1e-15, alg = 'base', start = 'rand',
                  debug=False):
         """
         Stores the input matrices and starts the algorithm
@@ -52,7 +54,9 @@ class SNMF:
             resid_thresh (float): Threshold value for the ratio of the 
                                   difference in recent errors to the original
                                   residual of the factored matrix.
-            alg (string) : Which update to perform. 
+            alg (string) : Which update to perform. USER NOTE: When doing 'sorth' updates, ALWAYS
+                                prefer the version that normalize the rows/columns after every iteration, as they provide 
+                                much better performance.
                                 options are: 
                                 'base' : (simultaneous NMF)
                                 'poisson' : (NMF using KL divergence)
@@ -66,6 +70,10 @@ class SNMF:
                                 'aff_sorth_W' : (simultaneous affine NMF with semi-orthogonal W
                                                 where columns of W normalized every iteration)
                                 'aff_sorth_H' : (simultaneous affine NMF with semi-orthogonal H
+                                                where rows of H normalized every iteration)
+                                'pois_norm_sorth_W' : (simultaneous NMF using KL divergence with semi-orthogonal W
+                                                where columns of W normalized every iteration)
+                                'pois_norm_sorth_H' : (simultaneous NMF using KL divergence with semi-orthogonal H
                                                 where rows of H normalized every iteration)
             start (string) : how to initialize matrices.
                                 options are:
@@ -99,11 +107,39 @@ class SNMF:
 
         ## generate a random state based on seed
         self.state = np.random.RandomState(self.seed)
+        
+        ##function for creating toy integer matrices
+        def f2(m, n):
+            #First, let's create a list with the size of m, and
+            #each row with the size of n.
+            result = [[0 for _ in range(n)] for _ in range(m)]
+            #now, you can loop through it easily.
+            for i in range(m): #outer list
+                 for j in range(n): #inner list
+                    result[i][j] = i*n+j + 1 #put it there :)
+            return np.matrix(result)
+
+        ##function for creating matrix with entries drawn from uniform distribution
+        def rand_unif(m, n):
+            #First, let's create a list with the size of m, and
+            #each row with the size of n.
+            result = [[0 for _ in range(n)] for _ in range(m)]
+            #now, you can loop through it easily.
+            for i in range(m): #outer list
+                 for j in range(n): #inner list
+                    result[i][j] = np.random.uniform() #put it there :)
+            return np.matrix(result)
 
         ## generate init random matrix for W
+#         ## constant matrix for debugging
+#         self.W = f2(5857,2)
+#         self.W = np.matrix([[1.50024814, 1.40511411],
+#  [1.85077071, 0.04977433],
+#  [0.98709596, 0.71779758]])
         n_w_rows = self.As[0].shape[0]  #all As have same #rows
         if ((self.start == 'rand') or (self.start == 'sorth_H')):
-            self.W = self.get_rand_nn_mat(n_w_rows, self.n_comps)
+            self.W = rand_unif(n_w_rows, self.n_comps) #Pablo update
+#             self.W = self.get_rand_nn_mat(n_w_rows, self.n_comps) #origional update
         elif ((self.start == 'sorth_W')):
             self.W = self.get_rand_nn_sorth_mat(n_w_rows, self.n_comps)
         else:
@@ -115,11 +151,16 @@ class SNMF:
         self.W_orth.append(self.orth_measure(self.W))
 
         ## generate init random matrices for H
+        ## constant matrix for debugging purpose
+#         self.Hs = [f2(2,38)]
+#         self.Hs = [np.matrix([[0.50669589, 1.4716279,  0.62101801, 0.05291379],
+#  [0.15188357, 1.15223417, 1.22219576, 0.86026858]])]
         self.Hs = []
         if ((self.start == 'rand') or  (self.start == 'sorth_W')):
             for A in self.As:
                 n_h_cols = A.shape[1]
-                self.Hs.append(self.get_rand_nn_mat(self.n_comps, n_h_cols))
+                self.Hs.append(rand_unif(self.n_comps, n_h_cols)) #Pablo update
+#                 self.Hs.append(self.get_rand_nn_mat(self.n_comps, n_h_cols)) #origional update
         elif (self.start == 'sorth_H'):
             for A in self.As:
                 n_h_cols = A.shape[1]
@@ -130,7 +171,7 @@ class SNMF:
         self.Hs_init = []
         for h in self.Hs:
             self.Hs_init.append(h)
-        ## saves  intial orthogonality measures for Hs for later comparison
+        ## saves intial orthogonality measures for Hs for later comparison
         self.Hs_orth = []
         self.Hs_orth.append([self.orth_measure(h) for h in self.Hs])
         
@@ -153,7 +194,8 @@ class SNMF:
             self.As_approx_init = []
             for a in self.As_approx:
                 self.As_approx_init.append(a)
-        elif ((alg == 'base') or (alg == 'poisson') or  (alg == 'sorth_W') or (alg == 'norm_sorth_W') or (alg == 'sorth_H') or (alg == 'norm_sorth_H')):
+        elif ((alg == 'base') or (alg == 'poisson') or  (alg == 'sorth_W') or (alg == 'norm_sorth_W') or (alg == 'sorth_H') 
+              or (alg == 'norm_sorth_H') or (alg == 'pois_norm_sorth_W') or (alg == 'pois_norm_sorth_H')):
             self.a_0s = [np.matrix(np.zeros(A.shape[0])).T for A in self.As]
             self.As_approx_init = []
         else:
@@ -220,7 +262,8 @@ class SNMF:
     def orth_measure(self, M):
         """
         Measures the semi-orthogonality of a matrix M according to
-        the formula O = |M^T / |M^T| - M^pinv \ |M^\pinv| |
+        the formula O = |M^T / |M^T| - M^pinv \ |M^\pinv| |. Worth checking literature 
+        to see if more standard measure exists.
             
             M (np.matrix) : matrix to measure orthogonality of
             
@@ -292,9 +335,9 @@ class SNMF:
                     self.As_approx = self.As_approx_init
                 else:
                     print("An unexpected error occured")
-            if ((self.alg == 'norm_sorth_W') or (self.alg == 'aff_sorth_W')):
+            if ((self.alg == 'norm_sorth_W') or (self.alg == 'aff_sorth_W') or (self.alg == 'pois_norm_sorth_W')):
                 self.W = T
-            elif ((self.alg == 'norm_sorth_H') or (self.alg == 'aff_sorth_H')):
+            elif ((self.alg == 'norm_sorth_H') or (self.alg == 'aff_sorth_H') or (self.alg == 'pois_norm_sorth_H')):
                 H = T
             else:
                 print(self.ALG_ERROR)
@@ -329,6 +372,14 @@ class SNMF:
         return sum([self.bs[i] * (self.As[i] - self.a_0s[i] * np.matrix(np.ones(self.As[i].shape[1]))) * self.Hs[i].T 
                     for i in range(self.d)])
     
+    def numer_pois_sorth_W(self, A, a_0, H):
+        """
+        Returns the numerator for the expression for updating sorth W using the KL divergence function
+        """
+        return sum([self.bs[i]* (np.divide(self.As[i], self.W * self.Hs[i]) * self.Hs[i].T + 
+                                 self.W * self.Hs[i] * np.ones((self.As[i].shape[1], self.As[i].shape[0])) * self.W)
+                    for i in range(self.d)])
+    
     def denom_base_W(self, A, A_approx, a_0, H):
         """
         Returns the denominator for the expression in the base W update
@@ -360,6 +411,14 @@ class SNMF:
         """
         return sum([self.bs[i] * self.W * (self.Hs[i] * ((self.As[i] - self.a_0s[i] * np.matrix(np.ones(self.As[i].shape[1]))).T 
                                                          * self.W)) for i in range(self.d)])
+    
+    def denom_pois_sorth_W(self, A, A_approx, a_0, H):
+        """
+        Returns the denominator for the expression for updating sorth W using the KL divergence function
+        """
+        return sum([np.ones(self.As[i].shape)* self.Hs[i].T + 
+                    self.W * self.Hs[i] * np.divide(self.As[i],self.W * self.Hs[i]).T * self.W
+                    for i in range(self.d)])
 
     """
     H update functions
@@ -382,6 +441,12 @@ class SNMF:
         Returns the numerator for the expression for the sorth H in the affine NMF
         """
         return self.W.T * (A - a_0 * np.matrix(np.ones(A.shape[1])))
+    
+    def numer_pois_sorth_H(self, A, a_0, H):
+        """
+        Returns the numerator for the expression for updating sorth H using the KL divergence function
+        """
+        return self.W.T * np.divide(A, self.W * H) + H * np.ones((A.shape[1], A.shape[0])) * self.W * H
     
     def denom_base_H(self, A, A_approx, a_0, H):
         """
@@ -412,6 +477,12 @@ class SNMF:
         Returns the denominator for the expression for the sorth H in the affine NMF update
         """
         return H * ((A - a_0 * np.matrix(np.ones(A.shape[1]))).T * self.W) * H
+    
+    def denom_pois_sorth_H(self, A, A_approx, a_0, H):
+        """
+        Returns the denominator for the expression for updating H using the KL divergence function
+        """
+        return self.W.T * np.ones(A.shape) + H * np.divide(A, self.W * H).T * self.W * H
 
     """
     a_0 update functions
@@ -481,14 +552,14 @@ class SNMF:
             
             returns (int) iter_numb
         """
+        self.iters = iter_numb
         self.W_norms.append(np.linalg.norm(self.W))
         self.H_norms.append(np.linalg.norm(self.Hs[0]))
 #         self.residual_graph = plt.plot(self.resids)
 #         plt.xlabel('iterations')
 #         plt.ylabel('residual')
 #         plt.title(str(self.alg) + ' residuals graph')
-        self.W
-#         print("ran {} iterations".format(iter_numb))
+        print("ran {} iterations".format(iter_numb))
         return(iter_numb)
         
     def individual_run(self, W_norm, W_numer, W_denom, H_norm, H_numer, H_denom, a_0_norm, a_0_numer, a_0_denom):
@@ -509,22 +580,32 @@ class SNMF:
                                                                                                             updated of a_0
         """
         for i in range(self.n_iter):
+#             print("iteration {}".format(i))
             self.As_approx = [self.W * self.Hs[i] + self.a_0s[i] * np.matrix(np.ones(self.As[i].shape[1])) 
                               for i in range(len(self.As))]
 #             print("W is {}".format(self.W))
 #             print()
-            self.W = self.mult_update(self.W, None, None, None, None,W_numer, W_denom, W_norm)
-            self.W_orth.append(self.orth_measure(self.W))
+#             self.W = self.mult_update(self.W, None, None, None, None,W_numer, W_denom, W_norm)
+#             self.W_orth.append(self.orth_measure(self.W))
             for j in range(len(self.Hs)):
                 self.Hs[j] = self.mult_update(self.Hs[j], self.As[j], self.As_approx[j], self.a_0s[j], self.Hs[j], 
                                               H_numer, H_denom, H_norm)
                 self.a_0s[j] = self.mult_update(self.a_0s[j], self.As[j], self.As_approx[j],self.a_0s[j],self.Hs[j], 
                                                 a_0_numer, a_0_denom, a_0_norm)
+#                 print("H is {}".format(np.linalg.norm(self.Hs[j])))
             self.Hs_orth.append([self.orth_measure(h) for h in self.Hs])
+            self.W = self.mult_update(self.W, None, None, None, None,W_numer, W_denom, W_norm)
+            self.W_orth.append(self.orth_measure(self.W))
+#             print("W is {}".format(np.linalg.norm(self.W)))
+#             print()
             self.resids.append(self.get_aff_resids())
-            if self.has_converged():
-                self.wrap_up(i)
-        self.wrap_up(i)
+            if i != 0 and self.has_converged():
+#                 print("residual is {}.".format(self.resids[-1]))
+#                 print("ran {} iterations".format(i))
+                return self.wrap_up(i)
+#         print("residual is {}.".format(self.resids[-1]))
+#         print("ran {} iterations".format(i))
+        return self.wrap_up(i)
     
     def run_snmf(self):
         """
@@ -535,6 +616,9 @@ class SNMF:
 #         print('starting update')
         w_norm = lambda W: np.matrix(normalize(W, norm='l2', axis=0))
         h_norm = lambda H: np.matrix(normalize(H, norm='l2', axis=1))
+#         print("starting W is {}".format(self.W))
+#         print("starting H is {}".format(self.Hs[0]))
+#         print()
         if self.alg == 'base':
             self.individual_run(None, self.numer_base_W, self.denom_base_W, 
                                 None, self.numer_base_H, self.denom_base_H, 
@@ -559,6 +643,10 @@ class SNMF:
             self.individual_run(w_norm, self.numer_aff_sorth_W, self.denom_aff_sorth_W, 
                                 None, self.numer_base_H, self.denom_aff_H,
                                 None, self.numer_a_0, self.denom_a_0)
+        elif self.alg == 'pois_norm_sorth_W':
+            self.individual_run(w_norm, self.numer_pois_sorth_W, self.denom_pois_sorth_W, 
+                                None, self.numer_pois_H, self.denom_pois_H,
+                                None, None,None)
         elif self.alg == 'sorth_H':
             self.individual_run(None, self.numer_base_W, self.denom_base_W,
                                 None, self.numer_base_H, self.denom_sorth_H, 
@@ -571,22 +659,35 @@ class SNMF:
             self.individual_run(None, self.numer_base_W, self.denom_aff_W,
                                 h_norm, self.numer_aff_sorth_H, self.denom_aff_sorth_H,
                                 None, self.numer_a_0, self.denom_a_0)
+        elif self.alg == 'pois_norm_sorth_H':
+            self.individual_run(None, self.numer_pois_W, self.denom_pois_W, 
+                                h_norm, self.numer_pois_sorth_H, self.denom_pois_sorth_H,
+                                None, None,None)
         else:
             print(self.ERROR_MESSAGE)
 
 if __name__ == "__main__":
     print("SNMF.py")
 
-    test_mat = np.matrix([
-        [1, 2, 3, 4],
-        [5, 6, 7, 8],
-        [9, 10, 11, 12]
-    ])
+    ##function for creating toy integer matrices
+    def f2(m, n):
+        #First, let's create a list with the size of m, and
+        #each row with the size of n.
+        result = [[0 for _ in range(n)] for _ in range(m)]
+        #now, you can loop through it easily.
+        for i in range(m): #outer list
+             for j in range(n): #inner list
+                result[i][j] = i*n+j + 1 #put it there :)
+        return np.matrix(result)
+    
+    test_mat = f2(3,4)
     
 #     updates = ['base', 'aff', 'sorth_W', 'norm_sorth_W', 'aff_sorth_W', 'sorth_H', 'norm_sorth_H', 'aff_sorth_H']
 #     updates = ['norm_sorth_W', 'aff_sorth_W', 'sorth_H', 'norm_sorth_H', 'aff_sorth_H']
 #     updates = ['sorth_H', 'norm_sorth_H']
+#     updates = ['base']
     updates = ['poisson']
+    updates = ['pois_norm_sorth_W', 'pois_norm_sorth_H']
 #     updates = ['aff', 'aff_sorth_W', 'aff_sorth_H']
     
 #     starts = ['rand', 'sorth_W', 'sorth_H']
@@ -605,13 +706,17 @@ if __name__ == "__main__":
             for s in starts:
 #                 print()
 #                 print("***")
-#                 print("UPDATE IS " + str(u) + "; START IS " + str(s))
+                print("UPDATE IS " + str(u) + "; START IS " + str(s))
 #                 print("***")
 #     #             print(len(snmf.resids))
 #                 print()
+                t0 = time.time()
                 snmf = SNMF([test_mat], n_comps=2, n_iter=2000, alg = u, start = s)
-#                 print(snmf.W * snmf.Hs[0])
-#                 print()
+                t1 = time.time()
+                print("time elapsed is {}".format(t1 - t0))
+                print()
+                print(snmf.W * snmf.Hs[0])
+                print()
 #                 print(snmf.As_approx[0])
 #                 print()
 #     #             print(snmf.a_0s[0] * np.matrix(np.ones(snmf.As[0].shape[1])))
@@ -620,27 +725,32 @@ if __name__ == "__main__":
 #             #     print()
 #             #     print(snmf.a_0s_init[0])
 #             #     print()
-#                 print(snmf.W)
-#                 print()
+                print(snmf.W)
+                print()
             #         print(snmf.W.T * snmf.W)
             #         print()
-            #         print(snmf.W_init)
-            #         print()
+#                 print(snmf.W_init)
+#                 print()
             #         print(snmf.W_init.T * snmf.W_init)
             #         print()
-#                 print(snmf.Hs[0])
-#                 print()
+                print(snmf.Hs[0])
+                print()
             #         print(snmf.Hs[0] * snmf.Hs[0].T)
 #                 print(snmf.Hs_init[0])
 #                 print()
             #         print(snmf.Hs_init[0] * snmf.Hs_init[0].T)
             #         print()
-#                 print(snmf.W_orth[0])
-#                 print()
-#                 print(snmf.W_orth[-1])
-#                 print()
-#                 print(snmf.Hs_orth[0])
-#                 print()
-#                 print(snmf.Hs_orth[-1])
-#                 print()
-#                 print('FINISHED')
+                plt.plot(snmf.W_orth)
+                plt.xlabel('iterations')
+                plt.ylabel('W orthogonality')
+                plt.title(str(snmf.alg) + ' W orthogonality graph')
+                plt.show()
+                print(snmf.W_orth[0])
+                print()
+                print(snmf.W_orth[-1])
+                print()
+                print(snmf.Hs_orth[0])
+                print()
+                print(snmf.Hs_orth[-1])
+                print()
+                print('FINISHED')
