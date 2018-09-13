@@ -11,6 +11,9 @@ Think more about sparsity
     * what is the goal of sparsity?
     * does either the L2 or L1 norm help us acheive these goals? If not, what can we use that will?
     * What is the best way actually to measure sparsity?
+    
+Optimization - worth trying to understand why the additive code runs so much more slowly than
+the multiplicative code in master_SNMF.py
 
 """
 
